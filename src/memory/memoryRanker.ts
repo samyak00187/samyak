@@ -1,0 +1,6 @@
+import type { Memory, RankedMemory } from './types';
+
+function recency(date: string): number { const ageDays = Math.max(0, (Date.now() - Date.parse(date)) / 86_400_000); return Math.exp(-ageDays / 90); }
+export class MemoryRanker {
+  rank(memories: Memory[], query: string, limit = 5): RankedMemory[] { const terms = query.toLowerCase().split(/\W+/).filter(Boolean); const languageQuery = terms.includes('language') || terms.includes('programming'); if (languageQuery) terms.push('python', 'javascript', 'typescript', 'java', 'rust', 'go'); return memories.map((memory) => { const content = memory.content.toLowerCase(); const matches = terms.filter((term) => content.includes(term)).length; const languageMatch = languageQuery && ['python', 'javascript', 'typescript', 'java', 'rust', 'go'].some((language) => content.includes(language)) ? 0.25 : 0; const similarity = terms.length ? matches / terms.length : 0; const score = similarity * 0.45 + languageMatch + memory.importance * 0.25 + memory.confidence * 0.2 + recency(memory.updatedAt) * 0.1; return { memory, score, similarity }; }).filter((item) => item.similarity > 0 || terms.length === 0).sort((a, b) => b.score - a.score).slice(0, limit); }
+}

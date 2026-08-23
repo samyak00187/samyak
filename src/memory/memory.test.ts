@@ -1,0 +1,13 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { MemoryManager } from './memoryManager';
+import { MemoryStore } from './memoryStore';
+import { MemoryExtractor } from './memoryExtractor';
+import { MemoryRanker } from './memoryRanker';
+
+beforeEach(() => localStorage.clear());
+describe('memory system', () => {
+  it('persists explicit memories and retrieves ranked results', async () => { const manager = new MemoryManager(); await manager.extractAndSave({ id: 'm', conversationId: 'c', role: 'user', content: 'Remember that I prefer Python.', timestamp: new Date().toISOString(), status: 'complete' }); await manager.save({ type: 'preference', scope: 'global', content: 'User prefers dark futuristic UI.', importance: .8, confidence: 1, source: 'user_explicit' }); const result = await manager.retrieve('What programming language do I prefer?'); expect(result.memories[0].memory.content).toContain('Python'); expect(result.formatted).toContain('<memory_context>'); });
+  it('blocks secrets and supersedes conflicting preferences', async () => { const manager = new MemoryManager(); expect((await manager.save({ type: 'fact', scope: 'global', content: 'API_KEY=do-not-store', importance: 1, confidence: 1, source: 'user_explicit' })).blocked).toBeTruthy(); await manager.save({ type: 'preference', scope: 'global', content: 'User prefers JavaScript.', importance: .8, confidence: 1, source: 'user_explicit' }); await manager.save({ type: 'preference', scope: 'global', content: 'User prefers Python.', importance: .9, confidence: 1, source: 'user_explicit' }); expect((await manager.store.list()).find((memory) => memory.content.includes('JavaScript'))?.status).toBe('superseded'); });
+  it('handles clear, disabled mode, and keyword ranking', async () => { const store = new MemoryStore(); const manager = new MemoryManager(store); await manager.save({ type: 'fact', scope: 'global', content: 'User uses VS Code.', importance: .6, confidence: 1, source: 'user_explicit' }); manager.setEnabled(false); expect((await manager.retrieve('VS Code')).memories).toHaveLength(0); manager.setEnabled(true); await manager.clear(); expect(await store.count()).toBe(0); expect(new MemoryRanker().rank([], 'query')).toEqual([]); });
+  it('extracts only useful explicit or stable user facts', () => { const extractor = new MemoryExtractor(); expect(extractor.extract({ id: '1', conversationId: 'c', role: 'user', content: 'Remember that my favorite editor is VS Code.', timestamp: '', status: 'complete' })).toHaveLength(1); expect(extractor.extract({ id: '2', conversationId: 'c', role: 'user', content: 'I ate lunch.', timestamp: '', status: 'complete' })).toHaveLength(0); });
+});

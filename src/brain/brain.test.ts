@@ -1,0 +1,24 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { AIProvider } from '../ai/provider';
+import type { AIRequest, AIResponse, AIStreamChunk, ModelInfo } from '../ai/types';
+import { IntentAnalyzer } from './intentAnalyzer';
+import { JarvisBrain } from './jarvisBrain';
+import { PlanExecutor } from './planExecutor';
+import { TaskPlanner } from './taskPlanner';
+import { DefaultToolRegistry } from './toolRegistry';
+import { ToolRouter } from './toolRouter';
+import { Replanner } from './replanner';
+import { DefaultPermissionManager } from './permissionManager';
+import type { AIMessage } from '../ai/types';
+
+const provider: AIProvider = { generate: async (request: AIRequest): Promise<AIResponse> => { void request; return { content: 'ok', model: 'test' }; }, stream: async (streamRequest: AIRequest, onChunk: (chunk: AIStreamChunk) => void) => { void streamRequest; onChunk({ content: 'System status complete.' }); onChunk({ done: true }); }, getModelInfo: (): ModelInfo => ({ provider: 'test', model: 'test', contextWindow: null, configured: true }) };
+const message = (content: string): AIMessage => ({ id: 'm1', conversationId: 'c1', role: 'user', content, timestamp: new Date().toISOString(), status: 'complete' });
+
+describe('agent brain foundations', () => {
+  it('classifies ordinary and system requests', () => { const analyzer = new IntentAnalyzer(); expect(analyzer.analyze('What is TypeScript?').requiresTools).toBe(false); expect(analyzer.analyze('Show current system status').type).toBe('system_operation'); });
+  it('creates a registered system status plan', () => { const plan = new TaskPlanner().create(new IntentAnalyzer().analyze('Show current system status')); expect(plan.steps[0].tool).toBe('getSystemStatus'); });
+  it('executes only after dependencies are complete', async () => { const registry = new DefaultToolRegistry(); const execute = vi.fn(async () => ({ success: true, data: { value: 1 } })); registry.register({ name: 'test', description: 'test', category: 'utility', inputSchema: {}, permissions: ['system.read'], execute }); const plan = { id: 'p', goal: 'test', status: 'pending' as const, steps: [{ id: 'one', description: 'one', status: 'pending' as const, tool: 'test' }, { id: 'two', description: 'two', status: 'pending' as const, tool: 'test', dependsOn: ['one'] }] }; const output = await new PlanExecutor(registry, { emit: vi.fn() }).execute(plan, { requestId: 'r', conversationId: 'c', planId: 'p', variables: {}, results: {}, metadata: {}, signal: new AbortController().signal }); expect(execute).toHaveBeenCalledTimes(2); expect(output.status).toBe('completed'); });
+  it('runs a safe agent workflow and emits final response', async () => { const registry = new DefaultToolRegistry(); registry.register({ name: 'getSystemStatus', description: 'status', category: 'system', inputSchema: {}, permissions: ['system.read'], execute: async () => ({ success: true, data: { online: true } }) }); const events: string[] = []; const chunks: string[] = []; await new JarvisBrain(provider, registry, new DefaultPermissionManager(), (event) => events.push(event.type)).process({ requestId: 'r', conversationId: 'c1', messages: [message('Show current system status')] }, (event) => { if ('content' in event && event.content) chunks.push(event.content); }, new AbortController().signal); expect(events).toContain('plan.created'); expect(events).toContain('tool.completed'); expect(chunks.join('')).toContain('System status'); });
+  it('routes only registered tools and requires confirmation for sensitive permissions', () => { const registry = new DefaultToolRegistry(); const tool = { name: 'getSystemStatus', description: 'status', category: 'system' as const, inputSchema: {}, permissions: ['system.read' as const], execute: async () => ({ success: true }) }; registry.register(tool); expect(new ToolRouter(registry).select(new IntentAnalyzer().analyze('Show system status'))).toBe(tool); const permissions = new DefaultPermissionManager(); expect(permissions.check(['filesystem.write'])).toBe('confirmation_required'); expect(permissions.check(['system.read'])).toBe('allowed'); });
+  it('cancels execution and bounds replanning', async () => { const controller = new AbortController(); controller.abort(); const plan = { id: 'p', goal: 'test', status: 'pending' as const, steps: [{ id: 'one', description: 'one', status: 'pending' as const, tool: 'missing' }] }; const output = await new PlanExecutor(new DefaultToolRegistry(), { emit: vi.fn() }).execute(plan, { requestId: 'r', conversationId: 'c', planId: 'p', variables: {}, results: {}, metadata: {}, signal: controller.signal }); expect(output.status).toBe('cancelled'); const replanner = new Replanner(1); expect(replanner.revise(plan, 'failed')).toBeDefined(); expect(replanner.revise(plan, 'failed')).toBeUndefined(); });
+});

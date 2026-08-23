@@ -1,0 +1,12 @@
+import { spawn } from 'node:child_process';
+import { z } from 'zod';
+import { tool, resultError } from '../toolHelpers';
+import type { Tool } from '../../brain/types';
+
+const knownApplications = [{ id: 'vscode', name: 'Visual Studio Code', executable: 'code' }, { id: 'notepad', name: 'Notepad', executable: process.platform === 'win32' ? 'notepad.exe' : 'notepad' }];
+const appName = z.object({ name: z.string().min(1).max(100) });
+export const applicationTools: Tool[] = [
+  tool({ name: 'list_applications', displayName: 'List Applications', description: 'Lists applications from JARVIS safe application registry.', category: 'application', permissions: ['application.read'], riskLevel: 'low', schema: z.object({}).strict(), execute: async () => ({ success: true, data: { applications: knownApplications.map(({ id, name }) => ({ id, name })) } }) }),
+  tool({ name: 'find_application', displayName: 'Find Application', description: 'Finds candidates in the safe application registry by name.', category: 'application', permissions: ['application.read'], riskLevel: 'low', schema: appName, execute: async (input) => { const parsed = appName.safeParse(input); if (!parsed.success) return resultError('INVALID_INPUT', 'Application name is required.'); const matches = knownApplications.filter((app) => app.name.toLowerCase().includes(parsed.data.name.toLowerCase())); return { success: true, data: { matches: matches.map(({ id, name }) => ({ id, name })) } }; } }),
+  tool({ name: 'open_application', displayName: 'Open Application', description: 'Opens a known application without accepting arbitrary shell commands.', category: 'application', permissions: ['application.launch'], riskLevel: 'low', schema: z.object({ id: z.enum(['vscode', 'notepad']) }), execute: async (input) => { const parsed = z.object({ id: z.enum(['vscode', 'notepad']) }).safeParse(input); if (!parsed.success) return resultError('INVALID_INPUT', 'Only known application identifiers are accepted.'); const app = knownApplications.find((candidate) => candidate.id === parsed.data.id)!; return await new Promise((resolve) => { const child = spawn(app.executable, [], { shell: false, detached: true, windowsHide: true, stdio: 'ignore' }); child.once('error', () => resolve(resultError('UNAVAILABLE', `${app.name} is not available.`))); child.once('spawn', () => { child.unref(); resolve({ success: true, data: { id: app.id, name: app.name, launched: true } }); }); }); } }),
+];
